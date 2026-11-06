@@ -18,8 +18,8 @@ on:
 
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE || 'ghcr.io/yukkcat/chatgpt2api:latest' }}
-  MEMORY: ${{ secrets.MEMORY || '210M' }}
-  DISK: ${{ secrets.DISK || '512M' }}
+  MEMORY: ${{ secrets.MEMORY || '512M' }}
+  DISK: ${{ secrets.DISK || '1024M' }}
 
 jobs:
   deploy-app:
