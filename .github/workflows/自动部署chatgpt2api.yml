@@ -18,7 +18,7 @@ on:
 
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE || 'ghcr.io/yukkcat/chatgpt2api:latest' }}
-  MEMORY: ${{ secrets.MEMORY || '256M' }}
+  MEMORY: ${{ secrets.MEMORY || '210M' }}
   DISK: ${{ secrets.DISK || '512M' }}
 
 jobs:
@@ -111,8 +111,14 @@ jobs:
           done < .env
         fi
         
-        # 启动应用
-        cf start ${{ env.APP_NAME }}
+        # 启动应用（即使失败也继续，方便查看日志）
+        cf start ${{ env.APP_NAME }} || true
+
+        echo "========== 应用状态 =========="
+        cf app ${{ env.APP_NAME }}
+
+        echo "========== 最近日志 =========="
+        cf logs ${{ env.APP_NAME }} --recent
 
     - name: Verify deployment
       run: |
@@ -121,12 +127,12 @@ jobs:
           echo "✅ chatgpt2api 启动成功"
         else
           echo "❌ 应用启动失败，当前状态: $STATUS"
-          echo "查看应用日志:"
-          cf logs ${{ env.APP_NAME }} --recent
+          echo "请查看上一步的最近日志来定位问题"
           exit 1
         fi
         
     - name: 详细部署信息
+      if: success()
       run: |
         echo "🚀 部署完成！详细信息如下："
         echo "区域(Region): ${{ github.event.inputs.region }}"
