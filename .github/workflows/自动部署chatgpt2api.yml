@@ -87,7 +87,7 @@ jobs:
           cf delete ${{ env.APP_NAME }} -f
           echo "❌ 部署推送失败"
           exit 1
-        end
+        fi
         
     - name: Set environment variables, fix start command and start app
       run: |
