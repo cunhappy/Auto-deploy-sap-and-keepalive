@@ -18,7 +18,7 @@ on:
 
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE || 'ghcr.io/yukkcat/chatgpt2api:latest' }}
-  MEMORY: ${{ secrets.MEMORY || '210M' }}
+  MEMORY: ${{ secrets.MEMORY || '400M' }}
   DISK: ${{ secrets.DISK || '512M' }}
 
 jobs:
