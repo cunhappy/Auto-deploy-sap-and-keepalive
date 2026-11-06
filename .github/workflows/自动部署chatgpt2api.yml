@@ -18,13 +18,12 @@ on:
 
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE || 'ghcr.io/yukkcat/chatgpt2api:latest' }}
-  MEMORY: ${{ secrets.MEMORY || '210M' }}
+  MEMORY: ${{ secrets.MEMORY || '256M' }}
   DISK: ${{ secrets.DISK || '512M' }}
 
 jobs:
   deploy-app:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -80,21 +79,23 @@ jobs:
 
     - name: Deploy application without starting
       run: |
-        # 使用 --no-start 推送应用，先不启动，避免直接触发硬编码 80 端口的默认命令导致崩溃
-        if cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} -k ${{ env.DISK }} --no-start; then
+        # 使用 --no-start 推送，并同时用 -c 覆盖启动命令（把硬编码的 80 改成 $PORT）
+        if cf push ${{ env.APP_NAME }} \
+          --docker-image ${{ env.DOCKER_IMAGE }} \
+          -m ${{ env.MEMORY }} \
+          -k ${{ env.DISK }} \
+          --no-start \
+          -c "uv run uvicorn main:app --host 0.0.0.0 --port \$PORT --access-log"; then
           echo "Push successful"
         else
-          cf delete ${{ env.APP_NAME }} -f
+          cf delete ${{ env.APP_NAME }} -f || true
           echo "❌ 部署推送失败"
           exit 1
         fi
-        
-    - name: Set environment variables, fix start command and start app
-      run: |
-        # 1. 核心修复：显式覆盖启动命令，将端口改为使用 Cloud Foundry 动态分配的 $PORT 变量
-        cf set-command ${{ env.APP_NAME }} "uv run uvicorn main:app --host 0.0.0.0 --port \$PORT --access-log"
 
-        # 2. 注入 chatgpt2api 所需的环境变量
+    - name: Set environment variables and start app
+      run: |
+        # 注入 chatgpt2api 所需的环境变量
         cf set-env ${{ env.APP_NAME }} CHATGPT2API_THREAD_TOKENS "6"
         cf set-env ${{ env.APP_NAME }} CHATGPT2API_AUTH_KEY "aaa"
         cf set-env ${{ env.APP_NAME }} TZ "Asia/Shanghai"
@@ -110,7 +111,7 @@ jobs:
           done < .env
         fi
         
-        # 3. 启动应用
+        # 启动应用
         cf start ${{ env.APP_NAME }}
 
     - name: Verify deployment
@@ -132,11 +133,12 @@ jobs:
         echo "组织(ORG): ${{ env.ORG }}"
         echo "空间(SPACE): ${{ env.SPACE }}"
         echo "应用名称(App Name): ${{ env.APP_NAME }}"
-
         # 获取应用路由
         ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
         if [ -n "$ROUTE" ]; then
           echo "API—URL: https://$ROUTE"
+          echo "控制台: https://$ROUTE"
+          echo "API地址: https://$ROUTE/v1"
         else
           echo "⚠️ 未找到应用路由，请检查部署状态。"
         fi
