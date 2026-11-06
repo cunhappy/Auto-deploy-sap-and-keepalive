@@ -78,20 +78,23 @@ jobs:
         # 使用获取的组织和空间重新登录
         cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE"
 
-    - name: Deploy application
+    - name: Deploy application without starting
       run: |
-        if cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} -k ${{ env.DISK }} --health-check-type port; then
-          echo "Deployment successful"
+        # 使用 --no-start 推送应用，先不启动，避免直接触发硬编码 80 端口的默认命令导致崩溃
+        if cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} -k ${{ env.DISK }} --no-start; then
+          echo "Push successful"
         else
           cf delete ${{ env.APP_NAME }} -f
-          echo "伙计,没资源了,部署失败,请明天早上8:10至9:00再尝试部署,已清理失败部署残留"
+          echo "❌ 部署推送失败"
           exit 1
-        fi
+        end
         
-    - name: Set environment variables and restart app
+    - name: Set environment variables, fix start command and start app
       run: |
-        # 注入 chatgpt2api 所需的环境变量，并绑定 Cloud Foundry 的标准 PORT
-        cf set-env ${{ env.APP_NAME }} PORT "8080"
+        # 1. 核心修复：显式覆盖启动命令，将端口改为使用 Cloud Foundry 动态分配的 $PORT 变量
+        cf set-command ${{ env.APP_NAME }} "uv run uvicorn main:app --host 0.0.0.0 --port \$PORT --access-log"
+
+        # 2. 注入 chatgpt2api 所需的环境变量
         cf set-env ${{ env.APP_NAME }} CHATGPT2API_THREAD_TOKENS "6"
         cf set-env ${{ env.APP_NAME }} CHATGPT2API_AUTH_KEY "aaa"
         cf set-env ${{ env.APP_NAME }} TZ "Asia/Shanghai"
@@ -107,9 +110,8 @@ jobs:
           done < .env
         fi
         
-        sleep 3
-        
-        cf restage ${{ env.APP_NAME }}
+        # 3. 启动应用
+        cf start ${{ env.APP_NAME }}
 
     - name: Verify deployment
       run: |
