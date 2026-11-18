@@ -1,0 +1,247 @@
+# ============================================================
+# 工作流名称：自动部署 ChatGPT2API 到 SAP BTP (Cloud Foundry)
+# 触发方式：仅手动触发（Actions 页面点 Run workflow）
+# 可选区域：SG(free) 新加坡 / US(free) 美国
+#
+# ------------------------------------------------------------
+# 运行前，必须在仓库 Settings → Secrets and variables → Actions
+# → Secrets 中配置以下变量（名字必须一字不差）：
+#
+#   【ChatGPT2API 相关】
+#   1) CHATGPT_AUTH_KEY      必填。管理密钥，自己编一个足够长的随机串
+#                            用于登录管理面板和调用 API
+#
+#   2) 数据存储（解决重启后数据丢失，下面两种二选一，都配则优先 postgres）
+#      方案A  CHATGPT_DATABASE_URL
+#             外部 PostgreSQL 连接串（推荐 Neon 免费库）
+#             如 postgresql://user:密码@ep-xxx.neon.tech/neondb?sslmode=require
+#      方案B  CHATGPT_GIT_REPO_URL + CHATGPT_GIT_TOKEN
+#             GitHub 私有仓库地址 + 有读写权限的 Token（务必是私有仓库）
+#
+#   【SAP 登录，2 个必填】
+#   3) EMAIL                 SAP BTP 账号邮箱
+#   4) PASSWORD              SAP BTP 账号密码
+#
+#   【可选】
+#   - CHATGPT_PROXY_URL      出站代理（被 Cloudflare 拦截时使用）
+#   - CHATGPT_DOCKER_IMAGE   自定义镜像，默认 ghcr.io/basketikun/chatgpt2api:latest
+#   - CHATGPT_MEMORY / CHATGPT_DISK   内存与磁盘，默认均为 1G
+# ============================================================
+name: 自动部署ChatGPT2API到SAP
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ---------- 部署区域选择 ----------
+      region:
+        description: '选择部署区域'
+        required: true
+        default: 'SG(free)'
+        type: choice
+        options:
+          - SG(free)    # Azure 新加坡
+          - US(free)    # AWS 美国
+      # ---------- 应用名称 ----------
+      app_name:
+        description: '应用名称（强烈建议固定填写，这样每次部署地址不变）'
+        required: false
+        default: ''
+
+# ---------- 全局环境变量（可用同名 Secret 覆盖） ----------
+env:
+  DOCKER_IMAGE: ${{ secrets.CHATGPT_DOCKER_IMAGE || 'ghcr.io/basketikun/chatgpt2api:latest' }}  # Docker 镜像地址
+  MEMORY: ${{ secrets.CHATGPT_MEMORY || '512M' }}                                                # 应用内存
+  DISK: ${{ secrets.CHATGPT_DISK || '512M' }}                                                    # 应用磁盘
+
+jobs:
+  deploy-app:
+    runs-on: ubuntu-latest
+
+    steps:
+    # ---------- 步骤1：安装 Cloud Foundry 命令行工具 ----------
+    - name: Install CF CLI
+      run: |
+        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cli.cloudfoundry.org.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cli.cloudfoundry.org.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+        sudo apt-get update
+        sudo apt-get install -y cf8-cli
+
+    # ---------- 步骤2：根据所选区域确定 API 地址和应用名 ----------
+    - name: Determine CF API endpoint and app name
+      run: |
+        # 生成 6 位随机字母，用于自动生成应用名
+        RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+
+        # API = 区域代码（拼成 api.cf.<API>.hana.ondemand.com）
+        # P   = 应用名前缀
+        case "${{ github.event.inputs.region }}" in
+          "SG(free)")  API=ap21;     P=gpt-freesg ;;
+          "US(free)")  API=us10-001; P=gpt-freeus ;;
+          *) echo "未知区域"; exit 1 ;;
+        esac
+
+        echo "CF_API=https://api.cf.${API}.hana.ondemand.com" >> $GITHUB_ENV
+
+        # 默认用"前缀+随机串"；如果手动填写了应用名，则以填写的为准
+        APP_NAME="${P}${RANDOM_STR}"
+        if [ -n "${{ github.event.inputs.app_name }}" ]; then
+          APP_NAME="${{ github.event.inputs.app_name }}"
+        fi
+        echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+        echo "应用名称: $APP_NAME"
+
+    # ---------- 步骤3：检查必填 Secrets，并决定数据存储方式 ----------
+    # 放在登录和部署之前：配置不全就直接失败，不会在 SAP 上留下残留
+    - name: Check secrets and select storage backend
+      env:
+        CHATGPT_AUTH_KEY: ${{ secrets.CHATGPT_AUTH_KEY }}
+        CHATGPT_DATABASE_URL: ${{ secrets.CHATGPT_DATABASE_URL }}
+        CHATGPT_GIT_REPO_URL: ${{ secrets.CHATGPT_GIT_REPO_URL }}
+        CHATGPT_GIT_TOKEN: ${{ secrets.CHATGPT_GIT_TOKEN }}
+      run: |
+        if [ -z "$CHATGPT_AUTH_KEY" ]; then
+          echo "❌ 缺少 CHATGPT_AUTH_KEY，请先在仓库 Secrets 中配置"
+          exit 1
+        fi
+
+        if [ -n "$CHATGPT_DATABASE_URL" ]; then
+          echo "STORAGE=postgres" >> $GITHUB_ENV
+          echo "✅ 数据存储：PostgreSQL"
+        elif [ -n "$CHATGPT_GIT_REPO_URL" ] && [ -n "$CHATGPT_GIT_TOKEN" ]; then
+          echo "STORAGE=git" >> $GITHUB_ENV
+          echo "✅ 数据存储：Git 私有仓库"
+        else
+          echo "❌ 未配置数据存储。请配置 CHATGPT_DATABASE_URL，"
+          echo "   或同时配置 CHATGPT_GIT_REPO_URL 和 CHATGPT_GIT_TOKEN"
+          echo "   （否则应用重启后数据会全部丢失）"
+          exit 1
+        fi
+
+    # ---------- 步骤4：查看镜像暴露的端口 ----------
+    # CF 会按镜像 EXPOSE 的端口转发流量（没有声明则默认 8080），
+    # 这里只打印出来方便排查，不会改动应用配置
+    - name: Detect container port
+      run: |
+        docker pull "${{ env.DOCKER_IMAGE }}"
+        PORT=$(docker image inspect "${{ env.DOCKER_IMAGE }}" \
+          --format '{{range $p,$_ := .Config.ExposedPorts}}{{println $p}}{{end}}' \
+          | head -1 | cut -d/ -f1)
+        if [ -z "$PORT" ]; then
+          echo "⚠️ 镜像未声明 EXPOSE，CF 将默认转发到 8080，"
+          echo "   若应用实际监听其他端口，部署会因健康检查失败，请查看日志"
+        else
+          echo "镜像暴露端口: $PORT"
+        fi
+
+    # ---------- 步骤5：登录 Cloud Foundry ----------
+    - name: Login to Cloud Foundry
+      run: |
+        # 第一次登录，用于获取组织和空间列表
+        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}"
+
+        # 取第一个组织和空间
+        ORG=$(cf orgs | sed -n '4p')
+        echo "ORG=$ORG" >> $GITHUB_ENV
+        SPACE=$(cf spaces | sed -n '4p')
+        echo "SPACE=$SPACE" >> $GITHUB_ENV
+
+        # 指定组织和空间重新登录
+        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE"
+
+    # ---------- 步骤6：部署应用 ----------
+    - name: Deploy application
+      env:
+        CHATGPT_AUTH_KEY: ${{ secrets.CHATGPT_AUTH_KEY }}
+        CHATGPT_DATABASE_URL: ${{ secrets.CHATGPT_DATABASE_URL }}
+        CHATGPT_GIT_REPO_URL: ${{ secrets.CHATGPT_GIT_REPO_URL }}
+        CHATGPT_GIT_TOKEN: ${{ secrets.CHATGPT_GIT_TOKEN }}
+        CHATGPT_PROXY_URL: ${{ secrets.CHATGPT_PROXY_URL }}
+      run: |
+        # 记录应用是否已存在：失败时只清理新建的应用，避免误删正在使用的旧应用
+        if cf app "${{ env.APP_NAME }}" >/dev/null 2>&1; then EXISTED=1; else EXISTED=0; fi
+
+        set +e   # 允许命令失败，由下面统一处理
+
+        # 推送镜像，--no-start 表示先不启动，等环境变量设好再启动
+        cf push "${{ env.APP_NAME }}" \
+          --docker-image "${{ env.DOCKER_IMAGE }}" \
+          -m "${{ env.MEMORY }}" -k "${{ env.DISK }}" \
+          --health-check-type port -t 180 --no-start
+        RC=$?
+
+        if [ $RC -eq 0 ]; then
+          # 管理密钥（程序读取的变量名是 CHATGPT2API_AUTH_KEY，会覆盖 config.json 里的 auth-key）
+          cf set-env "${{ env.APP_NAME }}" CHATGPT2API_AUTH_KEY "$CHATGPT_AUTH_KEY"
+
+          # 数据存储后端，解决重启后数据丢失
+          cf set-env "${{ env.APP_NAME }}" STORAGE_BACKEND "${{ env.STORAGE }}"
+          if [ "${{ env.STORAGE }}" = "postgres" ]; then
+            # 应用内变量名必须是 DATABASE_URL（程序只认这个名字）
+            cf set-env "${{ env.APP_NAME }}" DATABASE_URL "$CHATGPT_DATABASE_URL"
+          else
+            # 应用内变量名必须是 GIT_REPO_URL / GIT_TOKEN
+            cf set-env "${{ env.APP_NAME }}" GIT_REPO_URL "$CHATGPT_GIT_REPO_URL"
+            cf set-env "${{ env.APP_NAME }}" GIT_TOKEN "$CHATGPT_GIT_TOKEN"
+          fi
+
+          # 如果配置了代理，则传给应用（也可以部署后在网页设置页里配置）
+          if [ -n "$CHATGPT_PROXY_URL" ]; then
+            cf set-env "${{ env.APP_NAME }}" HTTPS_PROXY "$CHATGPT_PROXY_URL"
+            cf set-env "${{ env.APP_NAME }}" HTTP_PROXY "$CHATGPT_PROXY_URL"
+          fi
+
+          # 启动应用
+          cf start "${{ env.APP_NAME }}"
+          RC=$?
+        fi
+
+        # 失败处理：打印日志，必要时清理残留
+        if [ $RC -ne 0 ]; then
+          echo "❌ 部署失败，最近日志："
+          cf logs "${{ env.APP_NAME }}" --recent || true
+          if [ "$EXISTED" -eq 0 ]; then
+            cf delete "${{ env.APP_NAME }}" -r -f
+            echo "已清理失败部署残留"
+          fi
+          echo "可能是资源不足、端口不匹配或数据库连接失败，请根据上面的日志排查"
+          exit 1
+        fi
+        echo "✅ 部署成功"
+
+    # ---------- 步骤7：验证服务是否正常响应 ----------
+    - name: Verify deployment
+      env:
+        CHATGPT_AUTH_KEY: ${{ secrets.CHATGPT_AUTH_KEY }}
+      run: |
+        # 获取应用访问地址
+        ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
+        echo "ROUTE=$ROUTE" >> $GITHUB_ENV
+
+        # 最多检查 6 次，每次间隔 10 秒，带密钥访问 /v1/models 返回 200 视为正常
+        for i in 1 2 3 4 5 6; do
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $CHATGPT_AUTH_KEY" \
+            "https://$ROUTE/v1/models" || true)
+          echo "第 $i 次检查 /v1/models -> HTTP $CODE"
+          if [ "$CODE" = "200" ]; then OK=1; break; fi
+          sleep 10
+        done
+
+        if [ -z "$OK" ]; then
+          echo "⚠️ 接口未正常响应，查看日志："
+          cf logs ${{ env.APP_NAME }} --recent
+          exit 1
+        fi
+
+    # ---------- 步骤8：输出部署信息 ----------
+    - name: 详细部署信息
+      run: |
+        echo "🚀 部署完成"
+        echo "区域: ${{ github.event.inputs.region }}"
+        echo "组织: ${{ env.ORG }}  空间: ${{ env.SPACE }}"
+        echo "应用名称: ${{ env.APP_NAME }}"
+        echo "数据存储: ${{ env.STORAGE }}"
+        echo "管理面板: https://${{ env.ROUTE }}"
+        echo "API 地址: https://${{ env.ROUTE }}/v1"
+        echo "保活任务需要的变量 CHATGPT_CF_API = ${{ env.CF_API }}"
+        echo "保活任务需要的变量 CHATGPT_APP_NAME = ${{ env.APP_NAME }}"
