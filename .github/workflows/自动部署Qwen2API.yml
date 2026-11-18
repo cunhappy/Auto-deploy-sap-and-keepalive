@@ -1,6 +1,27 @@
 # ============================================================
 # 工作流名称：自动部署 Qwen2API 到 SAP BTP (Cloud Foundry)
 # 触发方式：仅手动触发（Actions 页面点 Run workflow）
+# 可选区域：SG(free) 新加坡 / US(free) 美国
+#
+# ------------------------------------------------------------
+# 运行前，必须在仓库 Settings → Secrets and variables → Actions
+# → Secrets 中配置以下变量（名字必须一字不差）：
+#
+#   【Qwen 相关，2 个必填】
+#   1) QWEN_API_KEY    管理员密钥，自己编一个足够长的随机串，如 sk-xxxxxxxx
+#                      用于登录管理面板和调用 API
+#   2) QWEN_REDIS_URL  Upstash Redis 的 TLS 连接串，rediss:// 开头（两个 s）
+#                      如 rediss://default:密码@xxx.upstash.io:6379
+#                      用于保存账号数据，解决应用重启后数据丢失
+#
+#   【SAP 登录，2 个必填】
+#   3) EMAIL           SAP BTP 账号邮箱
+#   4) PASSWORD        SAP BTP 账号密码
+#
+#   【可选】
+#   - PROXY_URL        出站代理（Qwen 拦截 SAP 机房 IP 时使用）
+#   - DOCKER_IMAGE     自定义镜像，默认 rfym21/qwen2api:latest
+#   - MEMORY / DISK    内存与磁盘，默认均为 1G
 # ============================================================
 name: 自动部署Qwen2API到SAP
 
@@ -14,47 +35,8 @@ on:
         default: 'SG(free)'
         type: choice
         options:
-          # 免费区域
-          - SG(free)               # Azure 新加坡
-          - US(free)               # AWS 美国
-          # SAP 区域
-          - SAP-UAE(Dubai)
-          - SAP-AU(Sydney)
-          - SAP-US(Sterling)
-          - SAP-US-West(Colorado)
-          - SAP-JP(Tokyo)
-          # AWS 区域
-          - AWS-AU(Sydney)
-          - AWS-BR(São Paulo)
-          - AWS-KR(Seoul)
-          - AWS-CA(Montreal)
-          - AWS-US(VA)
-          - AWS-US(OR)
-          - AWS-EU(Frankfurt)
-          - AWS-JP(Tokyo)
-          - AWS-SG(Singapore)
-          # GCP 区域
-          - GCP-AU(Sydney)
-          - GCP-BR(São Paulo)
-          - GCP-US(IA)
-          - GCP-EU(Frankfurt)
-          - GCP-JP(Osaka)
-          - GCP-JP(Tokyo)
-          - GCP-IL(Tel Aviv)
-          - GCP-IN(Mumbai)
-          - GCP-KSA(Dammam)
-          # Azure 区域
-          - Azure-AU(Sydney)
-          - Azure-BR(São Paulo)
-          - Azure-CA(Montreal)
-          - Azure-US(VA)
-          - Azure-US(WA)
-          - Azure-EU(Netherlands)
-          - Azure-JP(Tokyo)
-          - Azure-SG(Singapore)
-          # SAP Neo 区域
-          - Neo-UAE(Dubai)
-          - Neo-KSA(Riyadh)
+          - SG(free)    # Azure 新加坡
+          - US(free)    # AWS 美国
       # ---------- 应用名称 ----------
       app_name:
         description: '应用名称（强烈建议固定填写，这样每次部署地址不变）'
@@ -64,8 +46,8 @@ on:
 # ---------- 全局环境变量（可用同名 Secret 覆盖） ----------
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE || 'rfym21/qwen2api:latest' }}  # Docker 镜像地址
-  MEMORY: ${{ secrets.MEMORY || '1G' }}                                  # 应用内存
-  DISK: ${{ secrets.DISK || '1G' }}                                      # 应用磁盘
+  MEMORY: ${{ secrets.MEMORY || '512M' }}                                  # 应用内存
+  DISK: ${{ secrets.DISK || '512M' }}                                      # 应用磁盘
 
 jobs:
   deploy-app:
@@ -89,41 +71,8 @@ jobs:
         # API = 区域代码（拼成 api.cf.<API>.hana.ondemand.com）
         # P   = 应用名前缀
         case "${{ github.event.inputs.region }}" in
-          "SG(free)")               API=ap21;     P=qwen-freesg ;;
-          "US(free)")               API=us10-001; P=qwen-freeus ;;
-          "SAP-UAE(Dubai)")         API=ae01;     P=qwen-sapae ;;
-          "SAP-AU(Sydney)")         API=ap01;     P=qwen-sapau ;;
-          "SAP-US(Sterling)")       API=us01;     P=qwen-sapus1 ;;
-          "SAP-US-West(Colorado)")  API=us02;     P=qwen-sapus2 ;;
-          "SAP-JP(Tokyo)")          API=jp01;     P=qwen-sapjp ;;
-          "AWS-AU(Sydney)")         API=ap10;     P=qwen-awsau ;;
-          "AWS-BR(São Paulo)")      API=br10;     P=qwen-awsbr ;;
-          "AWS-KR(Seoul)")          API=ap12;     P=qwen-awskr ;;
-          "AWS-CA(Montreal)")       API=ca10;     P=qwen-awsca ;;
-          "AWS-US(VA)")             API=us10-001; P=qwen-awsusva ;;
-          "AWS-US(OR)")             API=us11;     P=qwen-awsusor ;;
-          "AWS-EU(Frankfurt)")      API=eu10-005; P=qwen-awseu ;;
-          "AWS-JP(Tokyo)")          API=jp10;     P=qwen-awsjp ;;
-          "AWS-SG(Singapore)")      API=ap11;     P=qwen-awssg ;;
-          "GCP-AU(Sydney)")         API=ap30;     P=qwen-gcpau ;;
-          "GCP-BR(São Paulo)")      API=br30;     P=qwen-gcpbr ;;
-          "GCP-US(IA)")             API=us30;     P=qwen-gcpus ;;
-          "GCP-EU(Frankfurt)")      API=eu30;     P=qwen-gcpeu ;;
-          "GCP-JP(Osaka)")          API=jp30;     P=qwen-gcpjpo ;;
-          "GCP-JP(Tokyo)")          API=jp31;     P=qwen-gcpjpt ;;
-          "GCP-IL(Tel Aviv)")       API=il30;     P=qwen-gcpil ;;
-          "GCP-IN(Mumbai)")         API=in30;     P=qwen-gcpin ;;
-          "GCP-KSA(Dammam)")        API=sa31;     P=qwen-gcpsa ;;
-          "Azure-AU(Sydney)")       API=ap20;     P=qwen-azau ;;
-          "Azure-BR(São Paulo)")    API=br20;     P=qwen-azbr ;;
-          "Azure-CA(Montreal)")     API=ca20;     P=qwen-azca ;;
-          "Azure-US(VA)")           API=us21;     P=qwen-azva ;;
-          "Azure-US(WA)")           API=us20;     P=qwen-azwa ;;
-          "Azure-EU(Netherlands)")  API=eu20-001; P=qwen-azeu ;;
-          "Azure-JP(Tokyo)")        API=jp20;     P=qwen-azjp ;;
-          "Azure-SG(Singapore)")    API=ap21;     P=qwen-azsg ;;
-          "Neo-UAE(Dubai)")         API=neo-ae1;  P=qwen-neouae ;;
-          "Neo-KSA(Riyadh)")        API=neo-sa1;  P=qwen-neoksa ;;
+          "SG(free)")  API=ap21;     P=qwen-freesg ;;
+          "US(free)")  API=us10-001; P=qwen-freeus ;;
           *) echo "未知区域"; exit 1 ;;
         esac
 
@@ -200,7 +149,7 @@ jobs:
           cf set-env "${{ env.APP_NAME }}" API_KEY "$QWEN_API_KEY"
           # 数据保存到 Redis，解决重启后数据丢失
           cf set-env "${{ env.APP_NAME }}" DATA_SAVE_MODE redis
-          # 注意：这里应用内的变量名必须仍是 REDIS_URL（程序只认这个名字），
+          # 注意：应用内的变量名必须仍是 REDIS_URL（程序只认这个名字），
           # 值取自 GitHub Secret 里的 QWEN_REDIS_URL
           cf set-env "${{ env.APP_NAME }}" REDIS_URL "$QWEN_REDIS_URL"
           # 图片缓存使用内存模式
