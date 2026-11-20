@@ -21,7 +21,7 @@
 #   - RSSHUB_CACHE_EXPIRE   路由缓存时间（秒），默认 1800
 #   - RSSHUB_DOCKER_IMAGE   自定义镜像，默认 ghcr.io/diygod/rsshub:latest
 #                           （注意：不要用 chromium-bundled 版本，太大，SAP 上起不来）
-#   - RSSHUB_MEMORY / RSSHUB_DISK   内存与磁盘，默认 768M / 1G
+#   - RSSHUB_MEMORY / RSSHUB_DISK   内存与磁盘，默认 512M / 1G
 #
 # 说明：RSSHub 本身不需要数据库，配置全部是环境变量；
 #       环境变量由 Cloud Foundry 保存，应用每天被平台停止再启动也不会丢。
@@ -44,12 +44,12 @@ on:
       app_name:
         description: '应用名称（强烈建议固定填写，否则每次部署地址都会变，订阅要重新改）'
         required: false
-        default: ''
+        default: 'my-rsshub-abc123'
 
 # ---------- 全局环境变量（可用同名 Secret 覆盖） ----------
 env:
   DOCKER_IMAGE: ${{ secrets.RSSHUB_DOCKER_IMAGE || 'ghcr.io/diygod/rsshub:latest' }}  # Docker 镜像地址
-  MEMORY: ${{ secrets.RSSHUB_MEMORY || '768M' }}                                     # 应用内存
+  MEMORY: ${{ secrets.RSSHUB_MEMORY || '512M' }}                                     # 应用内存
   DISK: ${{ secrets.RSSHUB_DISK || '1G' }}                                           # 应用磁盘
 
 jobs:
